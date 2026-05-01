@@ -1,0 +1,220 @@
+= rpi-image-gen - Execution Flow
+:toc: left
+:toclevels: 3
+:sectlinks:
+:sectanchors:
+
+link:../index.adoc[← Back to Main Documentation]
+
+== Overview
+
+The rpi-image-gen build process consists of multiple stages executed sequentially:
+
+. **Parameter Assembly** - Input validation and configuration parsing
+. **Layer Processing** - Layer collection, validation, and dependency resolution
+. **Build Preparation** - Environment setup and bdebstrap configuration
+. **Filesystem Generation** - Filesystem creation followed by hooks and overlays
+. **Image Generation** - Disk image creation
+. **Deployment** - Installation of build assets
+
+== Philosophy
+
+When instructed to use a source directory via the CLI, rpi-image-gen **prioritises that directory** for config files and layers, while still allowing references to its built-in resources. Similar to how a C compiler searches local directories before system directories (`-I. -I/usr/include`), rpi-image-gen uses a **hierarchical search path**. This allows users to have complete _project encapsulation_ for their integration.
+
+=== Practical Example
+
+[source,bash]
+----
+# Local config can include built-in base
+# File: ./my-project/config/kiosk.yaml
+include:
+  file: bookworm-minbase.cfg  # Resolves to built-in config
+
+layer:
+  app: my-kiosk               # Resolves to ./my-project/layer/my-kiosk.yaml
+
+# Build with mixed local/built-in resources
+$ rpi-image-gen build -S ./my-project/ -c kiosk.cfg
+----
+
+This philosophy enables a user to have self-contained projects with external dependencies.
+
+== Stage 1: Parameter Assembly
+
+=== Purpose
+Validate input arguments, parse configuration files, and establish the initial environment for subsequent stages.
+
+=== Activities
+
+* **Input Validation and Override Processing**: CLI processing
+* **Config Parsing**: Configuration file parsing
+* **Environment Injection**: Path setup, initial internal setup
+* **Sanity Checks**: Validate input sources
+
+== Stage 2: Layer Processing
+
+=== Purpose
+Discover, validate, and order all layers specified in the configuration, and expand all configuration variables to their final values.
+
+=== Activities
+
+* **Layer Collection**: Extract layer references from config
+* **Layer Validation**: Generate layer configuration variables
+* **Dependency Resolution**: Resolve layer build order to determine the build sequence
+* **Variable Expansion**: Resolves configuration variables with defined policy handling
+
+== Stage 3: Build Preparation
+
+=== Purpose
+Set up the build environment and assemble bdebstrap parameters with the necessary configuration.
+
+=== Activities
+
+* **Path Configuration**: Paths updated to allow location of host binaries and tools
+* **APT Configuration**: Configure apt settings including:
+  ** Key directories
+  ** Cache settings
+  ** Proxy settings
+  ** Package options
+* **Command Assembly**: Constructs the initial bdebstrap command including:
+  ** Environment variables
+  ** Target settings
+  ** All compatible YAML layer files
+  ** Installing core hook runners for setup, extract, essential, customize, and cleanup phases
+
+== Stage 4: Filesystem Generation
+
+=== Purpose
+Create the filesystem and generate the Software Bill of Materials.
+
+=== Activities
+
+* *Hook*`[pre-build.sh]`
+  ** _Example Use_ - Custom validation of pre-build settings
+* *Filesystem Generation*: Execute bdebstrap
+* *Overlays*: Apply static filesystem overlays
+* *Hook*`[post-build.sh]`
+  ** _Example Use_ - Custom installation of image or device specific assets, eg boot configuration files.
+* *SBOM*: Execute the Software Bill of Materials provider to create the SBOM file.
+
+== Stage 5: Image Generation
+
+=== Purpose
+
+Create disk images from the prepared filesystem using the provider.
+
+=== Activities
+
+* *Hook*`[pre-image.sh]`
+  ** _Example Use_ - Creating genimage templates, setting up image creation resources.
+* *Image Generation*: Execute the image provider to create images.
+* *Hook*`[post-image.sh]`
+  ** _Example Use_ - Custom packaging, signing with device keys, etc.
+
+== Stage 6: Deployment
+
+=== Purpose
+Install output assets from the build to a defined location for distribution.
+
+=== Activities
+
+Install and compress:
+
+* **Build**: Raw disk and sparse images, filesystem archives
+* **Audit**: SBOM, manifests
+
+== Hooks
+
+[IMPORTANT]
+====
+Hooks are optional but if a hook is to be executed, it must have executable permissions for the user performing the build.
+====
+
+=== Overview
+
+`rpi-image-gen` supports different classifications of hook, and runs all hooks in _phases_ via script `bin/runner`. Runner is responsible for invoking all hook scripts outside of layer declarations and is the single entry point every hook runs through. `bdebstrap` invokes it for each lifecycle phase (setup, customize, etc.) and the main script calls it for image, SBOM, and deploy phases. Runner:
+
+* Resolves hook locations from tagged specs (`IGROOT:*`, `DEVICE_ASSET:*`, `VAR:IGconf_*`) so the same path resolves regardless of environment (e.g. host vs container).
+* Executes phase-specific hooks in a deterministic order.
+* Applies optional filesystem overlays during `customize`.
+* Supports fallback hook groups (A|B) so that built-in hooks run when no custom is provided.
+* Orchestrates deterministic hook execution with the correct environment and arguments, regardless of where the build runs.
+
+=== Phases
+
+[cols="1,1,1,4", options="header"]
+|===
+| Phase      | Context   | Classification | Execution
+| setup      | bdebstrap | bundle         | After build output directory creation, before any packages are downloaded or installed
+| pre-build  | bdebstrap | single         | Within setup phase
+| extract    | bdebstrap | bundle         | After `Essential:yes` packages have been extracted, before installing them
+| essential  | bdebstrap | bundle         | After `Essential:yes` packages have been installed, before installing remaining packages
+| customize  | bdebstrap | bundle         | After all packages are installed, before cleanup commences
+| cleanup    | bdebstrap | bundle         | After customize
+| post-build | main      | single         | After bdebstrap, before sbom
+| sbom       | main      | single         | After post-build
+| pre-image  | main      | single         | After sbom, before image generation
+| post-image | main      | single         | After image generation
+| finalize   | main      | single         | After sbom and image generation, before deploy
+| deploy     | main      | single         | Final stage
+|===
+
+=== Hook Classification: bundle
+
+Runner scans for `setup*`, `extract*`, `essential*`, `customize*`, and `cleanup*` hooks inside `bdebstrap/` subdirectories of the following in order:
+
+. Device asset directory (`DEVICE_ASSET`)
+. Image asset directory (`IMAGE_ASSET`)
+. Source tree (`SRCROOT/bdebstrap`)
+. Built-in (`IGROOT/scripts/bdebstrap`)
+
+It executes matching hooks (alphanumeric basename) in that order for each phase. Subdirectories aren’t traversed; the file extension is ignored.
+
+=== Hook Classification: single
+
+Runner looks for `<phase>.sh` at each of the following locations in order:
+
+. Built-in root (`IGROOT`)
+. Built-in device subdir (`IGROOT/device`)
+. Built-in image subdir (`IGROOT/image`)
+. Device asset directory - `DEVICE_ASSET`
+. Image asset directory - `IMAGE_ASSET`
+. Source tree - `SRCROOT`
+
+Each location is independent: all present hooks run. Execution takes place from the parent directory of the hook.
+
+`sbom` and `deploy` are resolved differently - via config variables, which may point to any path.
+
+=== Overlays
+
+Filesystem overlays are applied during `customize`, in the following order (later entries take precedence):
+
+. **Per-layer overlays** - For each layer in build-plan order, if a directory named `<layer-stem>.rootfs-overlay` exists alongside the layer YAML file on disk (e.g. `my-layer.yaml` has `my-layer.rootfs-overlay/`), it is applied. This allows a layer to ship files into the target filesystem without hooks.
+. **Device asset overlay** - `DEVICE_ASSET/device/rootfs-overlay`
+. **Image asset overlay** - `IMAGE_ASSET/device/rootfs-overlay`
+. **Source tree overlay** - `SRCROOT:rootfs-overlay`
+
+With the exception of YAML `customize-hooks`, all overlays are applied before `customize` hook scripts execute.
+
+=== Core
+
+rpi-image-gen ships its own hooks to perform generic tasks. Depending on requirements, there may not be a need to add custom hooks at these stages as the generic hooks execute before SRCROOT hooks.
+
+=== Device and Image Asset Directory
+
+If a layer sets `IGconf_device_assetdir` (`DEVICE_ASSET`) or `IGconf_image_assetdir` (`IMAGE_ASSET`), Runner automatically looks for optional hooks inside those directories:
+
+[source,bash]
+----
+<assetdir>/<phase>.sh
+----
+
+If the asset directory isn’t defined, its hooks are skipped.
+
+=== initramfs
+
+If `initramfs-tools(7)` is installed in the chroot, rpi-image-gen extends the support of `initramfs-tools` compatible scripts and hooks to image and device directories via their sub-directory `device/initramfs-tools`. If present, the entire contents of this directory is recursively copied into the chroot. Mode and ownership attributes are preserved. Destination files will not be overwritten. This takes place during the `customize` stage of chroot creation and after execution of `DEVICE_ASSET` and `IMAGE_ASSET` hook bundles.
+
+== Interactive Mode
+
+A CLI option allows execution to pause between major operations for user confirmation. This may be useful for inspecting log output prior to building.

@@ -1,0 +1,88 @@
+[
+   {
+      "attributes": {
+         "PMAPversion": "1.3.1",
+         "system_type": "slotted"
+      }
+   },
+   {
+      "partitions": [
+         {
+            "comment": "boot configuration",
+            "image": "bootconfig"
+         }
+      ]
+   },
+   {
+      "slots": {
+         "A": {
+            "partitions": [
+               {
+                  "comment": "kernel + device tree + initramfs slot A",
+                  "image": "boot_a",
+                  "static": {
+                     "uuid": "${BOOT_UUID}",
+                     "role": "boot"
+                  }
+               }
+            ]
+         }
+      }
+   },
+   {
+      "slots": {
+         "B": {
+            "partitions": [
+               {
+                  "comment": "kernel + device tree + initramfs slot B",
+                  "image": "boot_b",
+                  "static": {
+                     "uuid": "${BOOT_UUID}",
+                     "role": "boot"
+                  }
+               }
+            ]
+         }
+      }
+   },
+   {
+      "slots": {
+         "A": {
+            "partitions": [
+               {
+                  "comment": "root filesystem slot A",
+                  "image": "system_a",
+                  "static": {
+                     "uuid": "${SYSTEM_UUID}",
+                     "role": "system"
+                  }
+               }
+            ]
+         }
+      }
+   },
+   {
+      "slots": {
+         "B": {
+            "partitions": [
+               {
+                  "comment": "root filesystem slot B",
+                  "image": "system_b",
+                  "static": {
+                     "uuid": "${SYSTEM_UUID}",
+                     "role": "system"
+                  }
+               }
+            ]
+         }
+      }
+   },
+   {
+      "partitions": [
+         {
+            "comment": "user data - shared between slots",
+            "image": "persistent"
+         }
+      ]
+   }
+]

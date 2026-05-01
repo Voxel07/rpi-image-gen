@@ -1,0 +1,12 @@
+# METABEGIN
+# X-Env-Layer-Name: rpi-debian-trixie
+# X-Env-Layer-Provides: rpi-debian
+# X-Env-Layer-Desc: Raspberry Pi Debian Trixie APT repository
+# X-Env-Layer-Version: 2.0.0
+# METAEND
+---
+mmdebstrap:
+  mirrors:
+    - ${IGTOP}/templates/debian/apt/rpi-trixie.sources
+  packages:
+    - raspberrypi-archive-keyring

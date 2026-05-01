@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+
+# Provisioning Map Helper
+
+import argparse
+import json
+import sys
+import uuid
+import re
+import os
+
+
+VALID_ROLES = ["boot", "system"]
+
+
+def pmap_version(data):
+    value = get_key(data, "attributes.PMAPversion")
+    if value is None:
+        # Try parsing as fully assembled image.json
+        pmap_data = get_key(data, "layout.provisionmap")
+        if isinstance(pmap_data, list) and len(pmap_data) == 0:
+            return None
+        value = get_key(data, "layout.provisionmap.attributes.PMAPversion")
+        if value is None:
+            sys.stderr.write("Error: No version\n")
+            sys.exit(1)
+
+    if isinstance(value, str):
+        pass
+    else:
+        sys.stderr.write("Error: Version is not a string\n")
+        sys.exit(1)
+
+    parts = value.split('.')
+    parts.extend(['0'] * (3 - len(parts)))
+
+    try:
+        # Return a tuple of the version components as integers
+        major = int(parts[0])
+        minor = int(parts[1])
+        patch = int(parts[2])
+        return major, minor, patch
+    except ValueError:
+        sys.stderr.write(f"Error: Invalid version format in '{value}'\n")
+        sys.exit(1)
+
+
+def _load_validator(schema_path):
+    try:
+        from jsonschema import Draft7Validator
+    except ImportError:
+        sys.stderr.write("Error: jsonschema not installed.\n")
+        sys.exit(2)
+
+    try:
+        with open(schema_path, "r", encoding="utf-8") as f:
+            schema = json.load(f)
+        Draft7Validator.check_schema(schema)
+        return Draft7Validator(schema)
+    except Exception as e:
+        sys.stderr.write(f"Error: failed to load schema '{schema_path}': {e}\n")
+        sys.exit(1)
+
+
+# Top level PMAP validator (returns parsed version on success)
+def validate(data, schema_path=None):
+    # Resolve schema path: explicit > alongside script > skip schema
+    validator = None
+    if schema_path is None:
+        # Try default schema next to this script
+        default_schema = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "provisionmap.schema.json")
+        if os.path.isfile(default_schema):
+            schema_path = default_schema
+    if schema_path:
+        validator = _load_validator(schema_path)
+
+    if validator is not None:
+        errors = sorted(validator.iter_errors(data), key=lambda e: list(e.path))
+        if errors:
+            sys.stderr.write(f"Error: schema validation failed ({len(errors)} errors)\n")
+            for e in errors:
+                path = "/".join(str(p) for p in e.path)
+                if path:
+                    sys.stderr.write(f"  at $.{path}: {e.message}\n")
+                else:
+                    sys.stderr.write(f"  at $: {e.message}\n")
+            sys.exit(1)
+
+    return pmap_version(data)
+
+
+"""
+Generate slot.map compatible triplets from a slotted PMAP JSON.
+See layer/rpi/device/ab-slots.adoc
+
+Rules
+- Physical partitions are encountered in JSON order; keep a global incrementing
+  partition counter for all physical partitions (including non-slot ones under
+  top-level "partitions").
+- Partitions inside an encrypted LUKS2 device use a mapper triplet of the form
+  mapper:<mname>:<part>, where <part> starts at 1 inside each mapper name and
+  increments per encountered partition in JSON order.
+"""
+def slotvars(data):
+    # Check for slotted system_type
+    if not any(e.get("attributes", {}).get("system_type") == "slotted" for e in data):
+        sys.stderr.write("Error: Not slotted\n")
+        sys.exit(1)
+
+    # Track physical partition numbering (1-based) across the image in JSON order
+    physical_part_index = 0
+
+    # Track per-mapper partition numbering (1-based) for encrypted containers
+    mapper_part_index = {}
+
+    # Accumulate triplets for each slot+role
+    # Keys are tuples like ("A", "boot") or ("B", "system")
+    triplets = {}
+
+    def next_mapper_index(name):
+        mapper_part_index[name] = mapper_part_index.get(name, 0) + 1
+        return mapper_part_index[name]
+
+    # First pass: walk entries in order and assign indices/triplets
+    for entry in data:
+        # Top-level physical partitions (non-slot items like config/data)
+        if "partitions" in entry and isinstance(entry.get("partitions"), list):
+            physical_part_index += len(entry["partitions"])
+            continue
+
+        # Encrypted at the top level with slots inside
+        if "encrypted" in entry and "slots" in entry["encrypted"]:
+            enc = entry["encrypted"]
+            mname = get_key(enc, "luks2.mname")
+            if not isinstance(mname, str):
+                sys.stderr.write("Error: encrypted.luks2.mname missing or invalid\n")
+                sys.exit(1)
+            slots = enc.get("slots", {})
+            for slot, slotval in slots.items():
+                for part in slotval.get("partitions", []):
+                    static = part.get("static")
+                    if static is None:
+                        continue
+                    role = static["role"]
+                    idx = next_mapper_index(mname)
+                    triplets[(slot, role)] = f"mapper:{mname}:{idx}"
+            continue
+
+        # Slots at the top level; may contain unencrypted and/or nested encrypted
+        if "slots" in entry:
+            slots = entry["slots"]
+            for slot, slotval in slots.items():
+                # Nested encrypted for this slot
+                if "encrypted" in slotval:
+                    enc = slotval["encrypted"]
+                    mname = get_key(enc, "luks2.mname")
+                    if not isinstance(mname, str):
+                        sys.stderr.write("Error: slots[*].encrypted.luks2.mname missing or invalid\n")
+                        sys.exit(1)
+                    for part in enc.get("partitions", []):
+                        static = part.get("static")
+                        if static is None:
+                            continue
+                        role = static["role"]
+                        idx = next_mapper_index(mname)
+                        triplets[(slot, role)] = f"mapper:{mname}:{idx}"
+
+                # Unencrypted partitions for this slot
+                if isinstance(slotval.get("partitions"), list):
+                    for part in slotval.get("partitions", []):
+                        physical_part_index += 1
+                        static = part.get("static")
+                        if static is None:
+                            continue
+                        role = static["role"]
+                        triplets[(slot, role)] = f"::{physical_part_index}"
+
+            continue
+
+    # Emit triplets in canonical order if present
+    def emit(slot_letter, role):
+        key = (slot_letter, role)
+        if key in triplets:
+            print(f"{slot_letter.lower()}.{role}={triplets[key]}")
+
+    for s in ("A", "B"):
+        emit(s, "boot")
+        emit(s, "system")
+
+
+
+def cryptvars(data):
+    # Walk the PMAP and emit LUKS2 mapper metadata
+    containers = []
+    seen = set()
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            enc = obj.get("encrypted")
+            if isinstance(enc, dict):
+                luks2 = enc.get("luks2")
+                if isinstance(luks2, dict):
+                    mname = luks2.get("mname")
+                    if isinstance(mname, str) and mname not in seen:
+                        seen.add(mname)
+                        containers.append(mname)
+                        print(f'{mname}_MNAME="{mname}"')
+                        uuid_val = luks2.get("uuid")
+                        if isinstance(uuid_val, str):
+                            print(f'{mname}_UUID="{uuid_val}"')
+                        etype_val = luks2.get("etype")
+                        if isinstance(etype_val, str):
+                            print(f'{mname}_ETYPE="{etype_val}"')
+                        label_val = luks2.get("label")
+                        if isinstance(label_val, str):
+                            print(f'{mname}_LABEL="{label_val}"')
+            for value in obj.values():
+                walk(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk(item)
+
+    walk(data)
+
+    if not containers:
+        sys.stderr.write("pmap: No LUKS2 containers found\n")
+
+    print(f'CONTAINERS="{" ".join(containers)}"')
+
+
+# Best effort general purpose JSON key retrieval
+def get_key(data, key_path, default=None):
+    keys = key_path.split('.')
+    val = data
+    for key in keys:
+        if isinstance(val, dict):
+            if key in val:
+                val = val[key]
+            else:
+                return default
+        elif isinstance(val, list):
+            # Try to interpret key as an integer index
+            try:
+                idx = int(key)
+                val = val[idx]
+            except (ValueError, IndexError):
+                # Optionally, search all items for the key
+                for item in val:
+                    if isinstance(item, dict) and key in item:
+                        val = item[key]
+                        break
+                else:
+                    return default
+        else:
+            return default
+    return val
+
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+            description='IDP Map File Utility')
+
+    parser.add_argument("-f", "--file",
+                        help="Path to Provisioning Map (PMAP) file",
+                        required=True)
+
+    parser.add_argument("--schema",
+                        help="Path to JSON schema to validate the supplied file against")
+
+    parser.add_argument("-s", "--slotvars",
+                        action="store_true",
+                        help="Print slot.map triplets")
+
+    parser.add_argument("-c", "--cryptvars",
+                        action="store_true",
+                        help="Print LUKS2 container variables")
+
+    parser.add_argument("--get-key",
+                        help="Dot-separated key path to retrieve from PMAP JSON")
+
+    args = parser.parse_args()
+
+    try:
+        with open(args.file) as f:
+            data = json.load(f)
+    except Exception as e:
+        sys.stderr.write(f"Error: invalid JSON: {e}\n")
+        sys.exit(1)
+
+    version = validate(data, args.schema)
+
+    if version is None:
+        # IDP doc with no PMAP. schema validation passed but PMAP
+        # specific ops are not possible
+        if args.slotvars or args.cryptvars:
+            sys.stderr.write("Error: No PMAP in IDP doc\n")
+            sys.exit(1)
+        sys.exit(0)
+
+    major, minor, patch = version
+
+    if args.get_key:
+        value = get_key(data, args.get_key)
+        if value is None:
+            sys.exit(1)
+        else:
+            print(value)
+            sys.exit(0)
+
+    if args.cryptvars:
+        pmap = data if isinstance(data, list) else get_key(data, "layout.provisionmap")
+        if pmap is None:
+            sys.stderr.write("Error: layout.provisionmap not found in JSON.\n")
+            sys.exit(1)
+        cryptvars(pmap)
+        sys.exit(0)
+
+    if args.slotvars:
+        pmap = data if isinstance(data, list) else get_key(data, "layout.provisionmap")
+        slotvars(pmap)
+        sys.exit(0);

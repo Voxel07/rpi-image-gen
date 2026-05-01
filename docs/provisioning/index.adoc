@@ -1,0 +1,91 @@
+= rpi-image-gen - Device Provisioning Documentation
+:toc: left
+:toclevels: 3
+:sectlinks:
+:sectanchors:
+
+link:../index.adoc[← Back to Main Documentation]
+
+== IDP (Image Description Provisioning)
+
+*IDP* enables secure, flexible device provisioning by bridging rpi-image-gen with https://github.com/raspberrypi/rpi-sb-provisioner[*rpi-sb-provisioner*] using a JSON description of your image. IDP supports any partition layout (not just Raspberry Pi OS distribution images) which means it's possible to securely provision completely custom images on your Raspberry Pi device.
+
+=== How it works:
+
+. *Generate* - rpi-image-gen creates an image description JSON file
+. *Send* - Client transfers the description to device
+. *Validate* - Device verifies compatibility (model, storage requirements, security attributes)
+. *Prepare* - Device creates partition tables, LUKS containers, etc.
+. *Provision* - Client writes partition images to prepared block devices
+
+IDP acts as a "smart block device creation tool" that prepares device storage and orchestrates secure image deployment through a defined protocol.
+
+=== Transport Protocol
+
+IDP was designed to be transport medium agnostic. The current implementation uses fastboot as the transport protocol, which allows it to interoperate with devices running the https://github.com/raspberrypi/pi-gen-micro[*pi-gen-micro*] fastboot gadget.
+
+=== Fastboot
+
+Please refer to the https://github.com/raspberrypi/rpi-fastbootd[*fastbootd*] repository for further information.
+
+=== JSON Structure
+
+The image description is split into two components using a simple schema:
+
+* *Image layout* - partition table and individual image information, sizes, filesystem types, attributes, metadata
+* *Provisioning map (PMAP)* - defines how the image will be provisioned on-device, e.g. partitions to encrypt, security attributes to use
+
+If an image layer is to support IDP, it must declare support of a provisioning map in its config settings and install the applicable JSON fragment as `${IGconf_image_outputdir}/provisionmap.json`. Typically this is handled by image layer specific hooks. If installed, rpi-image-gen will automatically include the PMAP in the final image description file (`image.json`). Please refer to the individual layer documentation for available PMAP options.
+
+rpi-image-gen provides the link:../layer/rpi-idp.html[rpi-idp layer] layer which supplies default IDP configuration variables (e.g., LUKS2 cipher, hash and key size) for use in PMAP templates. Image layouts are free to use these defaults, override them, or author their PMAP independently.
+
+=== Schema Validation
+
+The IDP and PMAP document formats are formally defined by JSON schemas (draft-07), located in `layer/rpi/schemas/`. These decouple document validation from the rpi-image-gen build flow - any toolchain capable of producing a conforming IDP document can participate in the Raspberry Pi provisioning flow without depending on rpi-image-gen.
+
+* link:../schemas/idp/v2/schema.html[IDP Schema Reference]
+* link:../schemas/provisionmap/v1/schema.html[PMAP Schema Reference]
+
+Schema validation is performed automatically at build time. The schemas can also be used independently to validate hand-authored or third-party generated IDP and PMAP documents.
+
+=== Benefits:
+
+* *Smart provisioning* - Device validates before writing
+* *Flexible layouts* - Support custom partition schemes
+* *Encryption support* - Integrates with LUKSv2, signed boot and industry standard encryption flows
+* *Secure workflow* - Validation at every step
+
+=== Dependencies
+
+IDP requires fastboot to be installed in the client. On Debian systems, this can be installed using ```sudo apt install fastboot```. Sparse format images are used when writing to device storage and rpi-image-gen image layers create sparse images by default using genimage. This avoids reliance on any external tooling, such as AOSP utilities. Using sparse format means images with lots of empty space can be transferred and written to device storage in a much shorter time using fastboot when compared with primitive tools such as dd. Other utilities such as bmaptool provide a similar, much-improved way for storage handling and IO transfer.
+
+[WARNING]
+====
+Raspberry Pi provisioning tools such as `rpi-sb-provisioner` (https://github.com/raspberrypi/rpi-sb-provisioner) rely on sparse images, so rpi-image-gen ships its own up-to-date `genimage` to avoid compatibility problems seen with older distribution versions.
+====
+
+
+=== Usage:
+
+rpi-sb-provisioner supports IDP. This enables seamless integration and secure deployment of rpi-image-gen created images on your Raspberry Pi device. Refer to the https://github.com/raspberrypi/rpi-sb-provisioner[*rpi-sb-provisioner* documentation] for further details.
+
+To use IDP *without* rpi-sb-provisioner:
+
+. Become familiar with *rpiboot* (https://github.com/raspberrypi/usbboot)
+. Build the pi-gen-micro fastboot gadget (https://github.com/raspberrypi/pi-gen-micro)
+. Boot the fastboot gadget on the target device
+. From your client, provision your image on the target device using rpi-image-gen's helper:
++
+[source,bash]
+----
+$ ./bin/idp.sh -f /path/to/image.json
+----
+
+[NOTE]
+====
+It's also possible to issue conventional fastboot commands from the client to the device. For example, to write a sparse image to device storage:
+[source,bash]
+----
+$ fastboot flash mmcblk0 /path/to/fullimage.sparse
+----
+====
