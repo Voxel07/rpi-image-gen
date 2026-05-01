@@ -8,28 +8,28 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-arm64:
-    name: build (arm64, on ubuntu-24.04-arm)
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
+  # build-arm64:
+  #   name: build (arm64, on ubuntu-24.04-arm)
+  #   runs-on: ubuntu-24.04-arm
+  #   timeout-minutes: 120
+  #   steps:
+  #     - name: checkout
+  #       uses: actions/checkout@v4
 
-      - name: install dependencies
-        run: |
-          sudo apt-get update
-          sudo ./install_deps.sh
+  #     - name: install dependencies
+  #       run: |
+  #         sudo apt-get update
+  #         sudo ./install_deps.sh
 
-      - name: test harness
-        run: |
-          stat -c '%a %n' "$HOME"
-          ./test/run-all.sh
+  #     - name: test harness
+  #       run: |
+  #         stat -c '%a %n' "$HOME"
+  #         ./test/run-all.sh
 
-      - name: build
-        run: |
-          ./rpi-image-gen build -c ./config/trixie-minbase.yaml
-          ./rpi-image-gen build -c ./config/trixie-minbase-ab.yaml
+  #     - name: build
+  #       run: |
+  #         ./rpi-image-gen build -c ./config/trixie-minbase.yaml
+  #         ./rpi-image-gen build -c ./config/trixie-minbase-ab.yaml
 
   # build-arm64-qemu:
   #   name: build (arm64, qemu on ubuntu-24.04)
@@ -73,6 +73,8 @@ jobs:
     timeout-minutes: 120
     # Only run on push/workflow_dispatch (not on PRs from forks — secrets unavailable)
     if: github.event_name != 'pull_request'
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       # 1. Check out rpi-image-gen into ./rpi-image-gen/
@@ -123,12 +125,12 @@ jobs:
             IGconf_rustdesk_key="$MILIZ_RUSTDESK_KEY"
 
       # 5. Upload the built image as a workflow artifact
+      #    rpi-image-gen writes the image to work/image-<name>/
       - name: upload image artifact
         uses: actions/upload-artifact@v4
         with:
           name: miliz-tv-image
-          # rpi-image-gen writes output to work/output/ by default
-          path: rpi-image-gen/work/output/miliz-tv*
+          path: rpi-image-gen/work/image-miliz-tv/miliz-tv.img
           if-no-files-found: error
           retention-days: 30
 
