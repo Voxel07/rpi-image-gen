@@ -31,28 +31,102 @@ jobs:
           ./rpi-image-gen build -c ./config/trixie-minbase.yaml
           ./rpi-image-gen build -c ./config/trixie-minbase-ab.yaml
 
-  build-arm64-qemu:
-    name: build (arm64, qemu on ubuntu-24.04)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
+  # build-arm64-qemu:
+  #   name: build (arm64, qemu on ubuntu-24.04)
+  #   runs-on: ubuntu-24.04
+  #   timeout-minutes: 120
+  #   steps:
+  #     - name: checkout
+  #       uses: actions/checkout@v4
 
-      - name: enable qemu-user-static
+  #     - name: enable qemu-user-static
+  #       run: |
+  #         sudo apt-get update
+  #         sudo apt-get install -y qemu-user-static binfmt-support
+  #         sudo update-binfmts --enable qemu-aarch64
+
+  #     - name: install dependencies
+  #       run: sudo ./install_deps.sh
+
+  #     - name: test harness
+  #       run: |
+  #         stat -c '%a %n' "$HOME"
+  #         ./test/run-all.sh
+
+  #     - name: build
+  #       run: ./rpi-image-gen build -c ./config/trixie-minbase.yaml -f
+
+  # ---------------------------------------------------------------------------
+  # miliz-tv custom image
+  # ---------------------------------------------------------------------------
+  # Required GitHub Secrets (Settings → Secrets and variables → Actions):
+  #   MILIZ_WIFI_SSID         Wi-Fi network name
+  #   MILIZ_WIFI_PASSWORD     Wi-Fi password
+  #   MILIZ_SSH_PUBKEY        SSH public key for user miliz
+  #   MILIZ_CONNECT_AUTHKEY   Raspberry Pi Connect auth key
+  #   MILIZ_RUSTDESK_SERVER   RustDesk relay server hostname
+  #   MILIZ_RUSTDESK_KEY      RustDesk relay server public key
+  # ---------------------------------------------------------------------------
+  build-miliz-tv:
+    name: build miliz-tv image (arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    # Only run on push/workflow_dispatch (not on PRs from forks — secrets unavailable)
+    if: github.event_name != 'pull_request'
+
+    steps:
+      # 1. Check out rpi-image-gen into ./rpi-image-gen/
+      - name: checkout rpi-image-gen
+        uses: actions/checkout@v4
+        with:
+          path: rpi-image-gen
+
+      # 2. Check out the miliz-tv layer repo into ./miliz-tv/  (sibling directory)
+      - name: checkout miliz-tv layer
+        uses: actions/checkout@v4
+        with:
+          repository: Voxel07/rpi-img-miliz
+          path: miliz-tv
+
+      # 3. Install build dependencies (must run from the rpi-image-gen root)
+      - name: install dependencies
+        working-directory: rpi-image-gen
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-user-static binfmt-support
-          sudo update-binfmts --enable qemu-aarch64
+          sudo ./install_deps.sh
 
-      - name: install dependencies
-        run: sudo ./install_deps.sh
-
-      - name: test harness
+      # 4. Build the miliz-tv image
+      #    -S ../miliz-tv/      → same relative path as the local dev command
+      #    -c miliz-tv.yaml     → config file inside miliz-tv/config/
+      #    -- key=value ...     → override all secrets; avoids storing them in the repo
+      - name: build miliz-tv image
+        working-directory: rpi-image-gen
+        env:
+          MILIZ_WIFI_SSID: ${{ secrets.MILIZ_WIFI_SSID }}
+          MILIZ_WIFI_PASSWORD: ${{ secrets.MILIZ_WIFI_PASSWORD }}
+          MILIZ_SSH_PUBKEY: ${{ secrets.MILIZ_SSH_PUBKEY }}
+          MILIZ_CONNECT_AUTHKEY: ${{ secrets.MILIZ_CONNECT_AUTHKEY }}
+          MILIZ_RUSTDESK_SERVER: ${{ secrets.MILIZ_RUSTDESK_SERVER }}
+          MILIZ_RUSTDESK_KEY: ${{ secrets.MILIZ_RUSTDESK_KEY }}
         run: |
-          stat -c '%a %n' "$HOME"
-          ./test/run-all.sh
+          ./rpi-image-gen build \
+            -S ../miliz-tv/ \
+            -c miliz-tv.yaml \
+            -- \
+            IGconf_tv_wifi_ssid="$MILIZ_WIFI_SSID" \
+            IGconf_tv_wifi_password="$MILIZ_WIFI_PASSWORD" \
+            IGconf_ssh_pubkey_user1="$MILIZ_SSH_PUBKEY" \
+            IGconf_connect_authkey="$MILIZ_CONNECT_AUTHKEY" \
+            IGconf_rustdesk_server="$MILIZ_RUSTDESK_SERVER" \
+            IGconf_rustdesk_key="$MILIZ_RUSTDESK_KEY"
 
-      - name: build
-        run: ./rpi-image-gen build -c ./config/trixie-minbase.yaml -f
+      # 5. Upload the built image as a workflow artifact
+      - name: upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: miliz-tv-image
+          # rpi-image-gen writes output to work/output/ by default
+          path: rpi-image-gen/work/output/miliz-tv*
+          if-no-files-found: error
+          retention-days: 30
 
