@@ -82,10 +82,12 @@ jobs:
           path: rpi-image-gen
 
       # 2. Check out the miliz-tv layer repo into ./miliz-tv/  (sibling directory)
+      #    token is required because rpi-img-miliz is a private repository
       - name: checkout miliz-tv layer
         uses: actions/checkout@v4
         with:
           repository: Voxel07/rpi-img-miliz
+          token: ${{ secrets.GH_PAT }}
           path: miliz-tv
 
       # 3. Install build dependencies (must run from the rpi-image-gen root)
