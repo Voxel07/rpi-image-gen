@@ -63,7 +63,8 @@ jobs:
   #   MILIZ_WIFI_SSID         Wi-Fi network name
   #   MILIZ_WIFI_PASSWORD     Wi-Fi password
   #   MILIZ_SSH_PUBKEY        SSH public key for user miliz
-  #   MILIZ_CONNECT_AUTHKEY   Raspberry Pi Connect auth key
+  #   MILIZ_CONNECT_AUTHKEY   Raspberry Pi Connect auth key (deprecated)
+  #   MILIZ_CONNECT_API_TOKEN Raspberry Pi Connect Management API token
   #   MILIZ_RUSTDESK_SERVER   RustDesk relay server hostname
   #   MILIZ_RUSTDESK_KEY      RustDesk relay server public key
   # ---------------------------------------------------------------------------
@@ -109,7 +110,7 @@ jobs:
           MILIZ_WIFI_SSID: ${{ secrets.MILIZ_WIFI_SSID }}
           MILIZ_WIFI_PASSWORD: ${{ secrets.MILIZ_WIFI_PASSWORD }}
           MILIZ_SSH_PUBKEY: ${{ secrets.MILIZ_SSH_PUBKEY }}
-          MILIZ_CONNECT_AUTHKEY: ${{ secrets.MILIZ_CONNECT_AUTHKEY }}
+          MILIZ_CONNECT_API_TOKEN: ${{ secrets.MILIZ_CONNECT_API_TOKEN }}
           MILIZ_RUSTDESK_SERVER: ${{ secrets.MILIZ_RUSTDESK_SERVER }}
           MILIZ_RUSTDESK_KEY: ${{ secrets.MILIZ_RUSTDESK_KEY }}
         run: |
@@ -120,7 +121,7 @@ jobs:
             IGconf_tv_wifi_ssid="$MILIZ_WIFI_SSID" \
             IGconf_tv_wifi_password="$MILIZ_WIFI_PASSWORD" \
             IGconf_ssh_pubkey_user1="$MILIZ_SSH_PUBKEY" \
-            IGconf_connect_authkey="$MILIZ_CONNECT_AUTHKEY" \
+            IGconf_tv_connect_api_token="$MILIZ_CONNECT_API_TOKEN" \
             IGconf_rustdesk_server="$MILIZ_RUSTDESK_SERVER" \
             IGconf_rustdesk_key="$MILIZ_RUSTDESK_KEY"
 
